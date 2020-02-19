@@ -1,0 +1,97 @@
+[startup.ssh_init]
+name = "bash"
+running_delay = -1
+
+[startup.ssh_init.args]
+script = """
+
+"""
+
+[startup.sshd]
+name = "core.system"
+after = ["ssh_init"]
+protected = true
+
+[startup.sshd.args]
+name = "/usr/sbin/sshd"
+args = ["-e", "-D"]
+
+[startup.postgres_init]
+name = "bash"
+after = ["sshd"]
+
+[startup.postgres_init.args]
+script = """
+set -x
+
+"""
+
+[startup.setup]
+name = "bash"
+running_delay = -1
+after = ["postgres_init"]
+
+[startup.setup.args]
+script = """
+set -ex
+
+
+# start postgres
+service postgresql start
+service nginx start
+
+"""
+
+[startup.taigaBack]
+name = "bash"
+after = ["setup"]
+protected = true
+
+[startup.taigaBack.args]
+script = """
+set -x
+su taiga -c 'cd /home/taiga/taiga-back ; /home/taiga/taiga-back/taiga/bin/gunicorn --workers 4 --timeout 60 -b 127.0.0.1:8001 taiga.wsgi'
+"""
+
+[startup.taigaEvents]
+name = "bash"
+after = ["setup"]
+protected = true
+
+[startup.taigaEvents.args]
+
+script = """
+set -x
+su taiga -c 'cd /home/taiga/taiga-events ; /home/taiga/taiga-events/node_modules/coffeescript/bin/coffee /home/taiga/taiga-events/index.coffee'
+"""
+
+[startup.s3Backup]
+name = "bash"
+after = ["setup"]
+recurring_period=7200
+
+[startup.s3Backup.args]
+script = """
+set -x
+bkp_directory='/home/taiga/taiga-backup'
+media_directory='/home/taiga/taiga-back/media'
+[ -d $bkp_directory ] || ( mkdir $bkp_directory && chown -R taiga:taiga $bkp_directory )
+[ -d $media_directory ] || ( mkdir $media_directory && chown -R taiga:taiga $media_directory )
+
+date=`date +%d%m%y%H%M`
+
+#Database backup
+su - taiga -c \"pg_dump -U taiga -c taiga > $bkp_directory/db-bkp-$date-dump.sql\"
+
+#File system backup
+zip -r $bkp_directory/app-bkp-$date.zip $media_directory >> /dev/null 3>&1
+
+unset HISTFILE
+if ! restic snapshots ;then echo restic repo does not initalized yet; restic init ; fi > /dev/null
+restic backup --cleanup-cache /home/taiga/taiga-backup
+restic forget -q --prune --keep-within 1m
+
+#Delete files older than 3 days
+find $bkp_directory/ -mtime +3 -delete
+
+"""
